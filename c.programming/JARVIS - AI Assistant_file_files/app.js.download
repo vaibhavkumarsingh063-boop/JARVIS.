@@ -1,0 +1,791 @@
+// Explain: Main application logic for JARVIS AI assistant, including UI, speech handling, gesture control, and dynamic media widgets.
+document.addEventListener('DOMContentLoaded', () => {
+    // --- Elements ---
+    const reactorContainer = document.getElementById('reactor-container');
+    const statusText = document.getElementById('jarvis-status-text');
+    const coreIcon = document.getElementById('core-icon');
+    const chatContainer = document.getElementById('chat-container');
+    const textForm = document.getElementById('text-form');
+    const textInput = document.getElementById('text-input');
+    const micToggleBtn = document.getElementById('mic-toggle-btn');
+    const coreBtn = document.getElementById('core-btn');
+    const stopSpeechBtn = document.getElementById('stop-speech-btn');
+    const statusIndicator = document.getElementById('status-indicator');
+
+    // Settings elements
+    const voiceSelect = document.getElementById('setting-voice');
+    const speedInput = document.getElementById('setting-speed');
+    const volumeInput = document.getElementById('setting-volume');
+    const muteToggle = document.getElementById('setting-mute');
+    const langSelect = document.getElementById('setting-lang');
+    const wakewordToggle = document.getElementById('setting-wakeword');
+    const gestureToggle = document.getElementById('setting-gestures');
+    const clearChatBtn = document.getElementById('clear-chat-btn');
+    const liveTranscript = document.getElementById('live-transcript');
+
+    // --- State ---
+    let currentState = 'idle'; // idle, listening, thinking, speaking
+    let currentSessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+    let isSpeaking = false;
+    let wakeWordEnabled = false;
+    let manualListen = false;
+    let availableVoices = [];
+
+    // --- Speech Recognition Setup ---
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+
+    if (SpeechRecognition) {
+        recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = langSelect ? langSelect.value : 'en-US';
+
+        if (langSelect) {
+            langSelect.addEventListener('change', (e) => {
+                recognition.lang = e.target.value;
+            });
+        }
+
+        recognition.onstart = () => {
+            if (manualListen) {
+                setUIState('listening', 'LISTENING...');
+            }
+            if (liveTranscript) liveTranscript.textContent = '';
+        };
+
+        recognition.onresult = (event) => {
+            let interim = '';
+            let final = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcriptPiece = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    final += transcriptPiece;
+                } else {
+                    interim += transcriptPiece;
+                }
+            }
+            
+            if (liveTranscript) {
+                liveTranscript.textContent = interim || final;
+            }
+
+            if (final.trim() !== '') {
+                handleTranscript(final.trim());
+            }
+        };
+
+        recognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            if (event.error === 'not-allowed') {
+                appendChat('System', 'Microphone access denied. Please check browser permissions.', 'ai');
+                wakewordToggle.checked = false;
+                wakeWordEnabled = false;
+            }
+            setUIState('idle', 'ONLINE');
+            
+            if (wakeWordEnabled && event.error !== 'not-allowed') {
+                setTimeout(() => {
+                    if (wakeWordEnabled && currentState === 'idle') {
+                        try { recognition.start(); } catch(e){}
+                    }
+                }, 1000);
+            }
+        };
+
+        recognition.onend = () => {
+            manualListen = false;
+            if (currentState === 'listening') {
+                setUIState('idle', 'ONLINE');
+            }
+            if (wakeWordEnabled && currentState === 'idle') {
+                setTimeout(() => {
+                    if (wakeWordEnabled && currentState === 'idle') {
+                        try { recognition.start(); } catch(e){}
+                    }
+                }, 200);
+            }
+        };
+    } else {
+        appendChat('System', 'Speech recognition is not supported in this browser. Use text input.', 'ai');
+        micToggleBtn.disabled = true;
+        wakewordToggle.disabled = true;
+    }
+
+    // --- Text to Speech Setup ---
+    const synth = window.speechSynthesis;
+
+    function populateVoices() {
+        availableVoices = synth.getVoices();
+        if (availableVoices.length === 0) return;
+        
+        voiceSelect.innerHTML = '';
+        availableVoices.forEach((voice, index) => {
+            const option = document.createElement('option');
+            option.value = index;
+            option.textContent = `${voice.name} (${voice.lang})`;
+            if (voice.name.includes('Google UK English Male') || voice.default) {
+                option.selected = true;
+            }
+            voiceSelect.appendChild(option);
+        });
+    }
+
+    if (synth.onvoiceschanged !== undefined) {
+        synth.onvoiceschanged = populateVoices;
+    }
+    populateVoices();
+
+    // --- UI State Management ---
+    function setUIState(state, text) {
+        currentState = state;
+        statusText.textContent = text;
+        
+        reactorContainer.className = `relative w-64 h-64 flex items-center justify-center state-${state}`;
+        
+        if (state === 'idle') {
+            coreIcon.className = 'fa-solid fa-microphone text-4xl text-cyan-400 opacity-80';
+            statusIndicator.className = 'w-3 h-3 rounded-full bg-cyan-400 shadow-[0_0_10px_#22d3ee]';
+        } else if (state === 'listening') {
+            coreIcon.className = 'fa-solid fa-ear-listen text-4xl text-green-400 opacity-90';
+            statusIndicator.className = 'w-3 h-3 rounded-full bg-green-400 shadow-[0_0_10px_#4ade80]';
+        } else if (state === 'thinking') {
+            coreIcon.className = 'fa-solid fa-microchip text-4xl text-purple-400 opacity-90';
+            statusIndicator.className = 'w-3 h-3 rounded-full bg-purple-400 shadow-[0_0_10px_#c084fc]';
+        } else if (state === 'speaking') {
+            coreIcon.className = 'fa-solid fa-wave-square text-4xl text-cyan-100 opacity-100';
+            statusIndicator.className = 'w-3 h-3 rounded-full bg-cyan-100 shadow-[0_0_15px_#fff]';
+        }
+    }
+
+    // --- Core Logic ---
+    function startListening() {
+        if (!recognition) return;
+        manualListen = true;
+        synth.cancel();
+        try {
+            recognition.start();
+        } catch(e) {}
+    }
+
+    function handleTranscript(transcript) {
+        const lower = transcript.toLowerCase();
+        
+        if (!manualListen && wakeWordEnabled) {
+            if (lower.includes('hey jarvis') || lower.includes('jarvis')) {
+                const command = lower.replace(/hey jarvis|jarvis/g, '').trim();
+                if (command) {
+                    processInput(command);
+                } else {
+                    setUIState('listening', 'AWAITING COMMAND...');
+                    manualListen = true;
+                }
+            }
+            return;
+        }
+
+        if (transcript) {
+            processInput(transcript);
+        }
+    }
+
+    async function processInput(text) {
+        if (!text.trim()) return;
+        if (synth) synth.cancel(); 
+        
+        const cmd = text.toLowerCase();
+        if (cmd === 'stop speaking' || cmd === 'shut up' || cmd === 'stop') {
+            stopSpeaking();
+            appendChat('You', text, 'user');
+            appendChat('JARVIS', 'Audio stopped.', 'ai');
+            return;
+        }
+        if (cmd === 'clear conversation' || cmd === 'reset') {
+            clearConversation();
+            return;
+        }
+
+        appendChat('You', text, 'user');
+        setUIState('thinking', 'PROCESSING...');
+
+        try {
+            const activeVisuals = Array.from(document.querySelectorAll('.draggable-widget .widget-title')).map(el => el.textContent);
+            
+            const response = await window.ServerFunction.call('jarvis', {
+                text: text,
+                session_id: currentSessionId,
+                active_visuals: activeVisuals
+            });
+
+            const answer = response.answer;
+            appendChat('JARVIS', answer, 'ai');
+            speakText(answer);
+
+            if (response.media && Array.isArray(response.media)) {
+                response.media.forEach(m => spawnMediaWidget(m));
+            } else if (response.media) {
+                spawnMediaWidget(response.media);
+            }
+            
+            if (response.commands && Array.isArray(response.commands)) {
+                response.commands.forEach(cmd => executeWidgetCommand(cmd));
+            }
+        } catch (error) {
+            console.error(error);
+            appendChat('System', 'Connection error: ' + error.message, 'ai');
+            setUIState('idle', 'ONLINE');
+        }
+    }
+
+    function speakText(text) {
+        if (liveTranscript) liveTranscript.textContent = '';
+        
+        if (!synth || (muteToggle && muteToggle.checked)) {
+            setUIState('idle', 'ONLINE');
+            return;
+        }
+        
+        synth.cancel();
+        const utterThis = new window.SpeechSynthesisUtterance(text);
+        
+        if (availableVoices.length > 0 && voiceSelect.value) {
+            utterThis.voice = availableVoices[voiceSelect.value];
+        }
+        utterThis.rate = parseFloat(speedInput.value) || 1;
+        utterThis.pitch = 0.9;
+        utterThis.volume = volumeInput ? parseFloat(volumeInput.value) : 1;
+
+        utterThis.onstart = () => {
+            isSpeaking = true;
+            stopSpeechBtn.classList.remove('hidden');
+            setUIState('speaking', 'SPEAKING...');
+        };
+
+        utterThis.onend = () => {
+            isSpeaking = false;
+            stopSpeechBtn.classList.add('hidden');
+            setUIState('idle', 'ONLINE');
+            if (wakeWordEnabled && !manualListen) {
+                try { recognition.start(); } catch(e){}
+            }
+        };
+
+        utterThis.onerror = (e) => {
+            console.error('Speech synthesis error', e);
+            isSpeaking = false;
+            stopSpeechBtn.classList.add('hidden');
+            setUIState('idle', 'ONLINE');
+        };
+
+        synth.speak(utterThis);
+    }
+
+    function stopSpeaking() {
+        if (synth) synth.cancel();
+        isSpeaking = false;
+        stopSpeechBtn.classList.add('hidden');
+        setUIState('idle', 'ONLINE');
+    }
+
+    function clearConversation() {
+        currentSessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+        chatContainer.innerHTML = '<div class="text-center text-sm text-cyan-500/50 my-2">Memory cleared. Awaiting commands.</div>';
+        stopSpeaking();
+        appendChat('System', 'Started a new secure session.', 'ai');
+    }
+
+    function appendChat(sender, message, type) {
+        const div = document.createElement('div');
+        const bubbleClass = type === 'user' ? 'chat-bubble-user ml-auto' : 'chat-bubble-ai mr-auto';
+        
+        div.className = `max-w-[80%] p-3 text-sm md:text-base ${bubbleClass}`;
+        div.innerHTML = `<div class="font-bold text-xs opacity-50 mb-1" style="font-family: var(--font-heading);">${sender}</div><div>${message.replace(/\n/g, '<br>')}</div>`;
+        
+        chatContainer.appendChild(div);
+        setTimeout(() => {
+            chatContainer.scrollTo({ top: chatContainer.scrollHeight, behavior: 'smooth' });
+        }, 50);
+    }
+
+    textForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const val = textInput.value.trim();
+        if (val) {
+            processInput(val);
+            textInput.value = '';
+        }
+    });
+
+    micToggleBtn.addEventListener('click', startListening);
+    coreBtn.addEventListener('click', startListening);
+    stopSpeechBtn.addEventListener('click', stopSpeaking);
+
+    wakewordToggle.addEventListener('change', (e) => {
+        wakeWordEnabled = e.target.checked;
+        if (wakeWordEnabled && currentState === 'idle' && recognition) {
+            try { recognition.start(); } catch(err){}
+        } else if (!wakeWordEnabled && recognition) {
+            recognition.stop();
+        }
+    });
+
+    clearChatBtn.addEventListener('click', () => {
+        clearConversation();
+        document.getElementById('settingsModal').close();
+    });
+
+    // --- Spawn Dynamic Media (Holographic Screens) ---
+    function spawnMediaWidget(media) {
+        const id = 'widget-' + Math.random().toString(36).substr(2, 9);
+        const widget = document.createElement('div');
+        widget.className = 'draggable-widget absolute z-40 glass-panel rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-300 ease-out';
+        widget.style.width = '320px';
+        widget.style.height = '320px';
+        widget.style.left = Math.floor(Math.random() * 20 + 10) + '%';
+        widget.style.top = Math.floor(Math.random() * 20 + 10) + '%';
+        widget.style.resize = 'both';
+
+        let content = '';
+        if (media.type === 'image') {
+            const query = media.payload.replace(/\s+/g, '+');
+            content = `<img src="https://files.cdn-files-a.com/uploads/12353619/normal_gi-6a96a1cbe519b.jpg?format=avif{query}" alt="${media.payload}" class="w-full h-full object-cover pointer-events-none">`;
+        } else if (media.type === 'chart') {
+            content = `<div class="relative w-full h-full p-4"><canvas id="canvas-${id}"></canvas></div>`;
+        }
+
+        widget.innerHTML = `
+            <div class="drag-handle w-full h-8 bg-cyan-900/40 hover:bg-cyan-900/70 cursor-move flex items-center justify-between px-3 border-b border-cyan-500/20 transition-colors">
+                <span class="widget-title text-xs text-cyan-300 font-bold tracking-wider uppercase truncate pointer-events-none" style="font-family: var(--font-heading);">${media.payload}</span>
+                <div class="flex gap-2">
+                    <button class="text-cyan-400 hover:text-white" onclick="window.toggleMinimize(this.closest('.draggable-widget'))"><i class="fa-solid fa-minus pointer-events-none"></i></button>
+                    <button class="text-cyan-400 hover:text-white" onclick="window.toggleMaximize(this.closest('.draggable-widget'))"><i class="fa-solid fa-expand pointer-events-none"></i></button>
+                    <button class="text-cyan-400 hover:text-white" onclick="this.closest('.draggable-widget').remove()"><i class="fa-solid fa-xmark pointer-events-none"></i></button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-hidden bg-slate-900/50 widget-body relative">
+                ${content}
+            </div>
+        `;
+
+        document.getElementById('jarvis-app').appendChild(widget);
+
+        if (media.type === 'chart' && window.Chart) {
+            setTimeout(() => {
+                const ctx = document.getElementById(`canvas-${id}`).getContext('2d');
+                new window.Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+                        datasets: [{
+                            label: media.payload,
+                            data: [Math.floor(Math.random()*100), Math.floor(Math.random()*100), Math.floor(Math.random()*100), Math.floor(Math.random()*100), Math.floor(Math.random()*100)],
+                            backgroundColor: 'rgba(168, 85, 247, 0.5)',
+                            borderColor: 'rgba(168, 85, 247, 1)',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        color: '#f8fafc',
+                        scales: {
+                            y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
+                            x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } }
+                        }
+                    }
+                });
+            }, 100);
+        }
+    }
+
+    // --- Standard Mouse & Touch Drag Logic ---
+    let activeDragElement = null;
+    let initialX = 0, initialY = 0;
+
+    document.addEventListener("mousedown", dragStart);
+    document.addEventListener("touchstart", dragStart, {passive: true});
+    document.addEventListener("mouseup", dragEnd);
+    document.addEventListener("touchend", dragEnd);
+    document.addEventListener("mousemove", drag);
+    document.addEventListener("touchmove", drag, {passive: false});
+
+    function dragStart(e) {
+        let handle = e.target.closest('.drag-handle');
+        if (!handle) return;
+        
+        activeDragElement = handle.closest('.draggable-widget');
+        if (!activeDragElement) return;
+
+        document.querySelectorAll('.draggable-widget').forEach(w => w.style.zIndex = '40');
+        activeDragElement.style.zIndex = '50';
+
+        if (e.type === "touchstart") {
+            initialX = e.touches[0].clientX;
+            initialY = e.touches[0].clientY;
+        } else {
+            initialX = e.clientX;
+            initialY = e.clientY;
+        }
+        
+        let transform = activeDragElement.style.transform;
+        let match = transform.match(/translate3d\((.+)px,\s*(.+)px/);
+        activeDragElement.xOffset = match ? parseFloat(match[1]) : 0;
+        activeDragElement.yOffset = match ? parseFloat(match[2]) : 0;
+
+        if (activeDragElement.classList.contains('-translate-x-1/2')) {
+            const rect = activeDragElement.getBoundingClientRect();
+            activeDragElement.classList.remove('left-1/2', '-translate-x-1/2', 'bottom-4');
+            activeDragElement.style.left = rect.left + 'px';
+            activeDragElement.style.top = rect.top + 'px';
+            activeDragElement.style.bottom = 'auto';
+            activeDragElement.xOffset = 0;
+            activeDragElement.yOffset = 0;
+        }
+    }
+
+    function drag(e) {
+        if (!activeDragElement) return;
+        e.preventDefault();
+        
+        let currentX, currentY;
+        if (e.type === "touchmove") {
+            currentX = e.touches[0].clientX - initialX;
+            currentY = e.touches[0].clientY - initialY;
+        } else {
+            currentX = e.clientX - initialX;
+            currentY = e.clientY - initialY;
+        }
+
+        let newX = activeDragElement.xOffset + currentX;
+        let newY = activeDragElement.yOffset + currentY;
+        
+        activeDragElement.style.transform = `translate3d(${newX}px, ${newY}px, 0)`;
+    }
+
+    function dragEnd() {
+        if (activeDragElement) {
+            let transform = activeDragElement.style.transform;
+            let match = transform.match(/translate3d\((.+)px,\s*(.+)px/);
+            activeDragElement.xOffset = match ? parseFloat(match[1]) : 0;
+            activeDragElement.yOffset = match ? parseFloat(match[2]) : 0;
+            activeDragElement = null;
+        }
+    }
+
+    window.toggleMinimize = function(widget) {
+        const body = widget.querySelector('.widget-body');
+        if (!body) return;
+        
+        if (widget.dataset.minimized === "true") {
+            widget.dataset.minimized = "false";
+            body.style.display = 'block';
+            widget.style.height = widget.dataset.prevHeight || '320px';
+        } else {
+            widget.dataset.prevHeight = widget.style.height;
+            widget.dataset.minimized = "true";
+            body.style.display = 'none';
+            widget.style.height = 'auto';
+        }
+    };
+
+    window.toggleMaximize = function(widget) {
+        if (widget.classList.contains('fullscreen-widget')) {
+            widget.classList.remove('fullscreen-widget', 'fixed', 'inset-4', 'z-[100]');
+            widget.classList.add('absolute');
+            widget.style.width = widget.dataset.prevWidth || '320px';
+            widget.style.height = widget.dataset.prevHeight || '320px';
+            widget.style.left = widget.dataset.prevLeft || '10%';
+            widget.style.top = widget.dataset.prevTop || '10%';
+        } else {
+            widget.dataset.prevWidth = widget.style.width;
+            widget.dataset.prevHeight = widget.style.height;
+            widget.dataset.prevLeft = widget.style.left;
+            widget.dataset.prevTop = widget.style.top;
+            
+            widget.classList.add('fullscreen-widget', 'fixed', 'inset-4', 'z-[100]');
+            widget.classList.remove('absolute');
+            widget.style.width = 'auto';
+            widget.style.height = 'auto';
+            widget.style.left = '1rem';
+            widget.style.top = '1rem';
+        }
+    };
+
+    function executeWidgetCommand(cmd) {
+        const widgets = Array.from(document.querySelectorAll('.draggable-widget'));
+        const targetWidget = widgets.find(w => {
+            const titleEl = w.querySelector('.widget-title');
+            return titleEl && titleEl.textContent.toLowerCase().includes(cmd.target.toLowerCase());
+        });
+
+        if (!targetWidget) return;
+
+        if (cmd.action === 'CLOSE') {
+            targetWidget.remove();
+        } else if (cmd.action === 'MINIMIZE') {
+            window.toggleMinimize(targetWidget);
+        } else if (cmd.action === 'ENLARGE') {
+            let w = parseInt(targetWidget.style.width) || targetWidget.offsetWidth;
+            let h = parseInt(targetWidget.style.height) || targetWidget.offsetHeight;
+            targetWidget.style.width = Math.min(w * 1.5, window.innerWidth * 0.9) + 'px';
+            targetWidget.style.height = Math.min(h * 1.5, window.innerHeight * 0.9) + 'px';
+        } else if (cmd.action === 'REDUCE') {
+            let w = parseInt(targetWidget.style.width) || targetWidget.offsetWidth;
+            let h = parseInt(targetWidget.style.height) || targetWidget.offsetHeight;
+            targetWidget.style.width = Math.max(w / 1.5, 150) + 'px';
+            targetWidget.style.height = Math.max(h / 1.5, 150) + 'px';
+        }
+    }
+
+    // --- MediaPipe Gesture Tracking Subsystem (V2 Centralized) ---
+    const cameraPip = document.getElementById('camera-pip');
+    const handCursor = document.getElementById('hand-cursor');
+    const videoElement = document.getElementById('webcam-video');
+    const canvasElement = document.getElementById('webcam-canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const closeCameraBtn = document.getElementById('close-camera-btn');
+    window.gestureDebug = document.getElementById('gesture-debug');
+    
+    let mpHands = null;
+    let mpCamera = null;
+
+    const GestureSystem = {
+        state: 'IDLE',
+        cursorX: window.innerWidth / 2,
+        cursorY: window.innerHeight / 2,
+        targetX: window.innerWidth / 2,
+        targetY: window.innerHeight / 2,
+        emaAlpha: 0.3,
+        sensitivity: 1.5,
+        activationDelay: 4,
+        releaseDelay: 3,
+        
+        dragGesture: 'PINCH',
+        clickGesture: 'POINT',
+        
+        holdFrames: 0,
+        releaseFrames: 0,
+        currentGesture: 'NONE',
+        
+        isMouseDown: false,
+        
+        updateCursor() {
+            // Exponential Moving Average smoothing
+            this.cursorX += (this.targetX - this.cursorX) * this.emaAlpha;
+            this.cursorY += (this.targetY - this.cursorY) * this.emaAlpha;
+            
+            // Constrain to screen
+            this.cursorX = Math.max(0, Math.min(window.innerWidth, this.cursorX));
+            this.cursorY = Math.max(0, Math.min(window.innerHeight, this.cursorY));
+            
+            handCursor.style.transform = `translate3d(${this.cursorX}px, ${this.cursorY}px, 0)`;
+            
+            if (this.state === 'DRAGGING' || this.isMouseDown) {
+                document.dispatchEvent(new MouseEvent('mousemove', {
+                    bubbles: true, cancelable: true, clientX: this.cursorX, clientY: this.cursorY
+                }));
+            }
+        },
+        
+        dispatchClick() {
+            const el = document.elementFromPoint(this.cursorX, this.cursorY);
+            if (el) {
+                el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: this.cursorX, clientY: this.cursorY }));
+                el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: this.cursorX, clientY: this.cursorY }));
+                el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: this.cursorX, clientY: this.cursorY }));
+            }
+        },
+        
+        dispatchMouseDown() {
+            this.isMouseDown = true;
+            const el = document.elementFromPoint(this.cursorX, this.cursorY);
+            if (el) {
+                el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: this.cursorX, clientY: this.cursorY }));
+            }
+        },
+        
+        dispatchMouseUp() {
+            this.isMouseDown = false;
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: this.cursorX, clientY: this.cursorY }));
+        },
+        
+        process(results) {
+            // Draw skeletal overlay
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    if (window.drawConnectors) window.drawConnectors(canvasCtx, landmarks, window.HAND_CONNECTIONS, {color: '#06b6d4', lineWidth: 3});
+                    if (window.drawLandmarks) window.drawLandmarks(canvasCtx, landmarks, {color: '#ffffff', lineWidth: 2, radius: 2});
+                }
+            }
+            canvasCtx.restore();
+
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                this.state = 'IDLE';
+                handCursor.classList.add('hidden');
+                if (this.isMouseDown) this.dispatchMouseUp();
+                this.updateDebugOverlay();
+                return;
+            }
+            
+            handCursor.classList.remove('hidden');
+            const hand = results.multiHandLandmarks[0];
+            
+            // Map coordinates with sensitivity around center
+            const rawX = (1 - hand[8].x); // Mirror X
+            const rawY = hand[8].y;
+            this.targetX = window.innerWidth * 0.5 + (rawX - 0.5) * window.innerWidth * this.sensitivity;
+            this.targetY = window.innerHeight * 0.5 + (rawY - 0.5) * window.innerHeight * this.sensitivity;
+            
+            this.updateCursor();
+            
+            // Calculate Finger Geometry
+            const thumbDist = Math.hypot(hand[4].x - hand[8].x, hand[4].y - hand[8].y);
+            const isIndex = hand[8].y < hand[6].y;
+            const isMiddle = hand[12].y < hand[10].y;
+            const isRing = hand[16].y < hand[14].y;
+            const isPinky = hand[20].y < hand[18].y;
+            
+            let detectedGesture = 'NONE';
+            let confidence = 0;
+            
+            if (thumbDist < 0.05) {
+                detectedGesture = 'PINCH';
+                confidence = Math.max(0, 100 - (thumbDist * 1000));
+            } else if (!isIndex && !isMiddle && !isRing && !isPinky) {
+                detectedGesture = 'FIST';
+                confidence = 90;
+            } else if (!isIndex && !isMiddle && !isRing && isPinky) {
+                detectedGesture = 'PINKY';
+                confidence = 90;
+            } else if (isIndex && !isMiddle && !isRing && !isPinky) {
+                detectedGesture = 'POINT';
+                confidence = 90;
+            } else if (isIndex && isMiddle && isRing && isPinky) {
+                detectedGesture = 'OPEN_PALM';
+                confidence = 90;
+            }
+            
+            // Temporal smoothing for gesture confidence
+            if (detectedGesture === this.currentGesture) {
+                this.holdFrames++;
+            } else {
+                this.holdFrames = 0;
+                this.currentGesture = detectedGesture;
+            }
+            
+            // State Machine Logic
+            switch (this.state) {
+                case 'IDLE':
+                    this.state = 'HOVER';
+                    break;
+                case 'HOVER':
+                    if (this.currentGesture === this.dragGesture && this.holdFrames >= this.activationDelay) {
+                        this.state = 'GRAB_START';
+                    } else if (this.currentGesture === this.clickGesture && this.holdFrames === this.activationDelay) {
+                        this.dispatchClick();
+                        handCursor.classList.add('bg-white');
+                        setTimeout(() => handCursor.classList.remove('bg-white'), 150);
+                    }
+                    break;
+                case 'GRAB_START':
+                    this.dispatchMouseDown();
+                    this.state = 'DRAGGING';
+                    handCursor.classList.add('bg-purple-500', 'scale-75');
+                    handCursor.classList.remove('bg-cyan-400');
+                    break;
+                case 'DRAGGING':
+                    if (this.currentGesture !== this.dragGesture) {
+                        this.releaseFrames++;
+                        if (this.releaseFrames >= this.releaseDelay) {
+                            this.state = 'GRAB_END';
+                            this.releaseFrames = 0;
+                        }
+                    } else {
+                        this.releaseFrames = 0;
+                    }
+                    break;
+                case 'GRAB_END':
+                    this.dispatchMouseUp();
+                    this.state = 'HOVER';
+                    handCursor.classList.remove('bg-purple-500', 'scale-75');
+                    handCursor.classList.add('bg-cyan-400');
+                    break;
+            }
+            
+            this.updateDebugOverlay(detectedGesture, confidence);
+        },
+        
+        updateDebugOverlay(gesture = 'NONE', conf = 0) {
+            if (window.gestureDebug) {
+                window.gestureDebug.innerHTML = `State: ${this.state}<br>Gest: ${gesture} (${Math.round(conf)}%)<br>Btn: ${this.isMouseDown ? 'DOWN' : 'UP'}<br>X:${Math.round(this.cursorX)} Y:${Math.round(this.cursorY)}`;
+            }
+            const testText = document.getElementById('test-gesture-text');
+            if (testText) testText.textContent = gesture;
+        }
+    };
+
+    function onHandResults(results) {
+        GestureSystem.process(results);
+    }
+
+    async function toggleGestures(enable) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            appendChat('System', 'Camera access is not supported by your browser.', 'ai');
+            if (gestureToggle) gestureToggle.checked = false;
+            return;
+        }
+
+        if (enable) {
+            cameraPip.classList.remove('hidden');
+            
+            if (!mpHands) {
+                mpHands = new window.Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+                mpHands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+                mpHands.onResults(onHandResults);
+                
+                mpCamera = new window.Camera(videoElement, {
+                    onFrame: async () => { await mpHands.send({image: videoElement}); },
+                    width: 320, height: 180
+                });
+            }
+            mpCamera.start();
+            appendChat('JARVIS', 'Visual spatial interface activated. Synthetic virtual mouse inputs active.', 'ai');
+        } else {
+            if (mpCamera) mpCamera.stop();
+            cameraPip.classList.add('hidden');
+            handCursor.classList.add('hidden');
+            GestureSystem.state = 'IDLE';
+            if (GestureSystem.isMouseDown) GestureSystem.dispatchMouseUp();
+        }
+    }
+
+    // Connect Configuration UI
+    const setDrag = document.getElementById('set-gest-drag');
+    const setClick = document.getElementById('set-gest-click');
+    const setSens = document.getElementById('set-gest-sens');
+    const setSmooth = document.getElementById('set-gest-smooth');
+    const sensVal = document.getElementById('sens-val');
+    const smoothVal = document.getElementById('smooth-val');
+
+    if (setDrag) setDrag.addEventListener('change', e => GestureSystem.dragGesture = e.target.value);
+    if (setClick) setClick.addEventListener('change', e => GestureSystem.clickGesture = e.target.value);
+    if (setSens) setSens.addEventListener('input', e => {
+        GestureSystem.sensitivity = parseFloat(e.target.value);
+        if(sensVal) sensVal.textContent = e.target.value;
+    });
+    if (setSmooth) setSmooth.addEventListener('input', e => {
+        GestureSystem.emaAlpha = parseFloat(e.target.value);
+        if(smoothVal) smoothVal.textContent = e.target.value;
+    });
+
+    if (gestureToggle) gestureToggle.addEventListener('change', (e) => toggleGestures(e.target.checked));
+    if (closeCameraBtn) closeCameraBtn.addEventListener('click', () => {
+        if (gestureToggle) gestureToggle.checked = false;
+        toggleGestures(false);
+    });
+
+    // Initialize UI
+    setUIState('idle', 'ONLINE');
+});

@@ -1,0 +1,31 @@
+/* Explain: Base reset and typography defaults, including custom scrollbar styling. - */
+* {
+    box-sizing: border-box;
+}
+
+html {
+    background: var(--background-color);
+    scroll-behavior: smooth;
+}
+
+body {
+    overflow-x: hidden;
+    background-image: radial-gradient(circle at 50% 50%, rgba(6, 182, 212, 0.1) 0%, transparent 60%);
+    background-attachment: fixed;
+    min-height: 100vh;
+}
+
+/* Custom Scrollbar for Chat */
+::-webkit-scrollbar {
+    width: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-color);
+}
